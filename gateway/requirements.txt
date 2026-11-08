@@ -1,0 +1,9 @@
+# Python 3.11 or newer. Direct dependencies verified for this local MVP.
+fastapi==0.143.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+uvicorn==0.54.0
+httpx==0.28.1
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3
+python-dotenv==1.2.3

@@ -1,0 +1,20 @@
+{$TOLLGATE_DOMAIN} {
+    request_body {
+        max_size 256KB
+    }
+    handle /v1/* {
+        reverse_proxy api:8080 {
+            flush_interval -1
+            lb_retries 0
+            transport http {
+                response_header_timeout 240s
+            }
+        }
+    }
+    handle {
+        reverse_proxy control:8000 {
+            flush_interval -1
+        }
+    }
+    header -Server
+}

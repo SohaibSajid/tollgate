@@ -1,0 +1,13 @@
+{$TOLLGATE_RELAY_DOMAIN} {
+    request_body {
+        max_size 256KB
+    }
+    reverse_proxy relay:8100 {
+        flush_interval -1
+        lb_retries 0
+        transport http {
+            response_header_timeout 240s
+        }
+    }
+    header -Server
+}

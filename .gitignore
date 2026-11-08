@@ -1,0 +1,19 @@
+# Local secrets and environment-specific settings.
+.env
+.env.*
+!.env.example
+
+# Installed packages and generated Python files.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Persistent local wallets, usage records, and SQLite sidecar files.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Local certificates
+*.crt

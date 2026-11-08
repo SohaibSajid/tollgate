@@ -1,0 +1,101 @@
+name: tollgate-wardens
+x-app: &app
+  build: .
+  image: tollgate:1.2.0
+  env_file: gateway/.env
+  environment: &environment
+    TOLLGATE_ENVIRONMENT: production
+    TOLLGATE_MODE: live
+    TOLLGATE_DATABASE_URL: postgresql://tollgate_app:${TOLLGATE_DB_PASSWORD:?Set TOLLGATE_DB_PASSWORD in the root .env}@database:5432/tollgate
+    TOLLGATE_PUBLIC_ORIGIN: https://${TOLLGATE_DOMAIN:?Set TOLLGATE_DOMAIN in the root .env}
+    TOLLGATE_WORKER_ENABLED: "false"
+    TOLLGATE_CONTROL_FAILURE_POLICY: fail_open
+    TOLLGATE_EXPECTED_WARDENS: '["warden-1","warden-2"]'
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  networks: [private]
+  depends_on:
+    migrate: {condition: service_completed_successfully}
+services:
+  database:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: tollgate
+      POSTGRES_DB: tollgate
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env}
+      TOLLGATE_DB_PASSWORD: ${TOLLGATE_DB_PASSWORD}
+    volumes: [postgres_data:/var/lib/postgresql/data, ./deploy/init-db.sh:/docker-entrypoint-initdb.d/10-tollgate.sh:ro]
+    restart: unless-stopped
+    networks: [private]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U tollgate -d tollgate"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *app
+    environment:
+      <<: *environment
+      TOLLGATE_SERVICE_ROLE: standalone
+      TOLLGATE_DATABASE_URL: postgresql://tollgate:${POSTGRES_PASSWORD}@database:5432/tollgate
+    command: [python, manage.py, migrate]
+    restart: "no"
+    depends_on:
+      database: {condition: service_healthy}
+  control:
+    <<: *app
+    environment:
+      <<: *environment
+      TOLLGATE_SERVICE_ROLE: control
+      TOLLGATE_NODE_ID: control-1
+  warden-1:
+    <<: *app
+    environment:
+      <<: *environment
+      TOLLGATE_SERVICE_ROLE: warden
+      TOLLGATE_NODE_ID: warden-1
+  warden-2:
+    <<: *app
+    environment:
+      <<: *environment
+      TOLLGATE_SERVICE_ROLE: warden
+      TOLLGATE_NODE_ID: warden-2
+  worker:
+    <<: *app
+    command: [python, manage.py, worker]
+    environment:
+      <<: *environment
+      TOLLGATE_SERVICE_ROLE: standalone
+  patrol:
+    <<: *app
+    command: [python, manage.py, patrol, --node-id, patrol-1]
+    environment:
+      <<: *environment
+      TOLLGATE_SERVICE_ROLE: standalone
+  api:
+    image: haproxy:3.2-alpine
+    volumes: [./deploy/wardens.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro]
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    networks: [private]
+    depends_on: [warden-1, warden-2]
+  edge:
+    image: caddy:2
+    environment:
+      TOLLGATE_DOMAIN: ${TOLLGATE_DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes: [./deploy/Caddyfile.wardens:/etc/caddy/Caddyfile:ro, caddy_data:/data, caddy_config:/config]
+    networks: [private]
+    restart: unless-stopped
+    depends_on: [api, control]
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+networks:
+  private:

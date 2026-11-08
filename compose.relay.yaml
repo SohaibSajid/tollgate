@@ -1,0 +1,43 @@
+# Deploy this on SEPARATE infrastructure from compose.wardens.yaml (another host, region or cloud).
+# It must not share a machine, disk, database or network with the wardens, or one failure takes both down.
+name: tollgate-standby
+x-standby: &standby
+  build: .
+  image: tollgate:1.2.0
+  env_file: gateway/.env
+  environment: &environment
+    TOLLGATE_ENVIRONMENT: production
+    TOLLGATE_RELAY_MODE: "true"
+    TOLLGATE_MODE: live
+    TOLLGATE_PUBLIC_ORIGIN: https://${TOLLGATE_RELAY_DOMAIN:?Set TOLLGATE_RELAY_DOMAIN in the root .env}
+    TOLLGATE_RELAY_DATABASE_PATH: /srv/gateway/data/relay.db
+    TOLLGATE_WATCH_STATE_PATH: /srv/gateway/data/watchdog.json
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  networks: [standby]
+  volumes: [standby_data:/srv/gateway/data]
+services:
+  relay:
+    <<: *standby
+    command: [python, manage.py, relay, --host, 0.0.0.0, --port, "8100"]
+  watchdog:
+    <<: *standby
+    command: [python, manage.py, watchdog]
+  edge:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      TOLLGATE_RELAY_DOMAIN: ${TOLLGATE_RELAY_DOMAIN}
+    volumes: [./deploy/Caddyfile.relay:/etc/caddy/Caddyfile:ro, caddy_data:/data, caddy_config:/config]
+    networks: [standby]
+    depends_on: [relay]
+networks:
+  standby:
+volumes:
+  standby_data:
+  caddy_data:
+  caddy_config:

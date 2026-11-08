@@ -1,0 +1,21 @@
+[
+  {
+    "id": "gpt-5.4-mini", "provider": "openai", "upstream_model": "gpt-5.4-mini",
+    "input_usd_per_million": "0.75", "cached_usd_per_million": "0.075", "output_usd_per_million": "4.50",
+    "price_version": "openai-standard-2026-10-22", "reviewed_on": "2026-10-22",
+    "max_input_tokens": 40000, "max_output_tokens": 4096, "context_tokens": 400000
+  },
+  {
+    "id": "claude-haiku-4-5", "provider": "anthropic", "upstream_model": "claude-haiku-4-5-20251001",
+    "input_usd_per_million": "1.00", "cached_usd_per_million": "0.10", "cache_write_usd_per_million": "1.25", "output_usd_per_million": "5.00",
+    "price_version": "anthropic-standard-2026-10-22", "reviewed_on": "2026-10-22",
+    "max_input_tokens": 40000, "max_output_tokens": 4096, "context_tokens": 200000
+  },
+  {
+    "id": "gemini-3.5-flash-lite", "provider": "gemini", "upstream_model": "gemini-3.5-flash-lite",
+    "input_usd_per_million": "0", "cached_usd_per_million": "0", "output_usd_per_million": "0",
+    "price_version": "gemini-free-tier-2026-10-22", "reviewed_on": "2026-10-22",
+    "max_input_tokens": 40000, "max_output_tokens": 4096, "context_tokens": 1048576,
+    "usage_output_limit": 65536
+  }
+]
