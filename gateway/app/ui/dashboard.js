@@ -2,6 +2,7 @@
 // Keep secrets in memory and render all returned strings as text, never HTML.
 const $ = id => document.getElementById(id);
 let csrfToken = '', snapshot = null, refreshing = false, lastRequest = null, lastCustomerKey = '';
+function uuid() { if (crypto.randomUUID) return crypto.randomUUID(); const b = crypto.getRandomValues(new Uint8Array(16)); b[6] = b[6] & 15 | 64; b[8] = b[8] & 63 | 128; const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join(''); return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20); }
 function notify(text, bad = false) { const element = $('message'); element.textContent = text; element.className = 'notice ' + (bad ? 'error' : 'ok'); }
 function money(value) { return '$' + value; }
 function usdToMicro(value) { const [whole, fraction = ''] = String(value).split('.'); return BigInt(whole) * 1000000n + BigInt(fraction.padEnd(6, '0')); }
@@ -79,7 +80,7 @@ $('auth-form').onsubmit=async event=>{event.preventDefault();const button=$('aut
 $('disconnect').onclick=async()=>{try{await api('/auth/logout','POST');location.reload();}catch(error){notify(error.message,true);}};$('refresh').onclick=()=>refresh();
 function bindForm(id, action) { $(id).onsubmit = async event => { event.preventDefault(); if (!csrfToken) { openAuth(); return; } const button = $(id).querySelector('button[type="submit"],button:not([type])'); if(button) button.disabled = true; try { await action(); await refresh(); } catch(error) { notify(error.message, true); } finally { if(button) button.disabled = false; } }; }
 bindForm('customer-form', async () => { const customer = await api('/admin/customers', 'POST', { name: $('customer-name').value }); $('customer-name').value = ''; const freeOnly=snapshot?.models.length>0&&snapshot.models.every(model=>model.pricing_source==='free_tier_assumed'); notify('Created ' + customer.name + (freeOnly?'. Create its virtual key below. Free-tier Gemini needs no credit grant.':'. Grant credits and issue its key below.')); });
-$('grant-ref').value = 'grant-' + crypto.randomUUID();
+$('grant-ref').value = 'grant-' + uuid();
 bindForm('grant-form', async () => { await api('/admin/credits', 'POST', {customer_id: $('grant-customer').value, amount_usd: $('grant-amount').value, reference: $('grant-ref').value}); notify('Credits granted. Repeating this reference will not add credits twice. Change the reference for a new grant.'); });
 bindForm('key-form', async () => { const result = await api('/admin/keys', 'POST', {customer_id: $('key-customer').value, label: $('key-label').value, allowed_models:[...$('key-models').selectedOptions].map(option=>option.value),expires_in_days:$('key-expiry').value?Number($('key-expiry').value):null}); $('new-key').value = result.api_key; $('play-key').value = result.api_key; $('new-key-panel').classList.remove('hidden'); notify('Virtual key created. Copy it now; the database stores only its hash.'); });
 bindForm('cap-form', async () => { await api('/admin/spend-cap', 'PUT', {customer_id: $('cap-customer').value, amount_usd: $('cap-amount').value || null}); notify('Lifetime spend cap saved.'); });
@@ -88,7 +89,7 @@ $('settle').onclick = async () => { try { const result = await api('/admin/settl
 $('play-form').onsubmit = async event => {
   // The playground uses a customer key independently of the owner connection.
   event.preventDefault(); $('send').disabled = true; $('play-output').textContent = ''; $('play-status').textContent = ''; $('inspect').disabled = true;
-  const key = $('play-key').value.trim(), stream = $('play-stream').checked, idem = crypto.randomUUID();
+  const key = $('play-key').value.trim(), stream = $('play-stream').checked, idem = uuid();
   try {
     const response = await fetch('/v1/chat/completions', {method:'POST',headers:{Authorization:'Bearer '+key,'Content-Type':'application/json','Idempotency-Key':idem,'X-Tollgate-Feature':$('play-feature').value},body:JSON.stringify({model:$('play-model').value,messages:[{role:'user',content:$('play-prompt').value}],max_completion_tokens:Number($('play-max').value),stream})});
     lastRequest = response.headers.get('X-Tollgate-Request-ID'); lastCustomerKey = key; $('inspect').disabled = !lastRequest;
@@ -110,7 +111,7 @@ setInterval(()=>{if(csrfToken&&!document.hidden)refresh(true);},5000);
 bindForm('freeze-form',async()=>{await api('/admin/customers/'+$('freeze-customer').value+'/freeze','POST',{frozen:$('freeze-action').value==='true',reason:$('freeze-reason').value});notify('Customer access updated.');});
 bindForm('resolve-form',async()=>{if(!confirm('Apply this accounting decision using the evidence entered?'))return;const result=await api('/admin/requests/'+encodeURIComponent($('resolve-id').value.trim())+'/resolve','POST',{action:$('resolve-action').value,evidence:$('resolve-evidence').value,input_tokens:Number($('resolve-input').value),output_tokens:Number($('resolve-output').value),cached_tokens:Number($('resolve-cached').value),cache_write_tokens:Number($('resolve-written').value)});notify('Request state: '+result.state);});
 $('reconcile').onclick=async()=>{try{$('reconcile-output').textContent=JSON.stringify(await api('/admin/reconciliation'),null,2);}catch(error){notify(error.message,true);}};
-let checkoutReference=crypto.randomUUID();
-$('checkout-amount').onchange=()=>{checkoutReference=crypto.randomUUID();$('checkout-link').classList.add('hidden');};
+let checkoutReference=uuid();
+$('checkout-amount').onchange=()=>{checkoutReference=uuid();$('checkout-link').classList.add('hidden');};
 $('checkout-form').onsubmit=async event=>{event.preventDefault();const button=$('checkout-form').querySelector('button');button.disabled=true;try{const result=await api('/v1/billing/checkout','POST',{amount_usd:$('checkout-amount').value,reference:checkoutReference},$('play-key').value.trim());$('checkout-link').href=result.checkout_url;$('checkout-link').classList.remove('hidden');notify('Checkout ready. Use the link to complete payment securely.');}catch(error){notify(error.message,true);}finally{button.disabled=false;}};
 (async()=>{try{const session=await api('/auth/session');csrfToken=session.csrf_token;await refresh(true);}catch{/* A signed-out page is a normal state. */}})();
