@@ -25,6 +25,7 @@ Headers:
 | `Content-Type: application/json` | required |
 | `Idempotency-Key` | optional but strongly recommended. 1–128 characters from `A-Za-z0-9_.:-`. One new UUID per user message. |
 | `X-Tollgate-Feature` | optional cost label, 1–64 characters, same alphabet, default `default` (for example `saathi-chat`) |
+| `X-Tollgate-End-User` | optional Saathi user ID (opaque, 1–128 characters, same alphabet) for per-user tracking; shown in the dashboard under Usage by end user |
 
 Body, **allowed fields only**. Any other field (`temperature`, `top_p`, `n`, `tools`, `user`) returns 422 `invalid_request`.
 

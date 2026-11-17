@@ -55,7 +55,7 @@ Order of tiers is configurable: `ResilientTollgate(..., failover_order=("direct"
 ## Setup
 
 1. On the main system: `python manage.py offline-secret`, set `TOLLGATE_RELAY_URL`, run `python manage.py migrate` (schema 4), restart wardens, control and worker.
-2. On the standby host: copy `gateway/.env` (provider keys, the same `ALLOWANCE_SECRET`, the same `models.json`), set `TOLLGATE_RELAY_DOMAIN`, `TOLLGATE_WATCH_READY_URL` (your public `/ready`), `TOLLGATE_WATCH_CONTROL_URL`, SMTP and/or SMS settings, then `docker compose -f compose.relay.yaml up -d --build`. Without Docker: `python manage.py relay --port 8100` and `python manage.py watchdog`.
+2. On the standby host: copy `gateway/.env` (provider keys, the same `ALLOWANCE_SECRET`, the same `TOLLGATE_CREDENTIALS_KEY` and `TOLLGATE_PROVIDER_KEY_POLICY` so customers' own provider keys sealed in their allowances can be used, the same `models.json`), set `TOLLGATE_RELAY_DOMAIN`, `TOLLGATE_WATCH_READY_URL` (your public `/ready`), `TOLLGATE_WATCH_CONTROL_URL`, SMTP and/or SMS settings, then `docker compose -f compose.relay.yaml up -d --build`. Without Docker: `python manage.py relay --port 8100` and `python manage.py watchdog`.
 3. Set customer contacts: `PUT /admin/customers/{id}/contact` with `email` and/or `phone` (E.164, e.g. `+923001234567`).
 4. In the customer app use `ResilientTollgate(...)`; call `refresh_allowance()` on a timer and `sync()` after recovery.
 

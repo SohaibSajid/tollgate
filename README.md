@@ -1,6 +1,6 @@
 # Tollgate 1.2 — prepaid AI gateway with wardens
 
-**New in this update:** separate control and warden roles, shared-ledger API admission, process heartbeats, an independent Patrol monitor, draining, explicit control-outage policy, and a two-warden deployment configuration. Read [the API and warden guide](docs/WARDENS.md) first for this architecture. The old standalone command remains available. The database schema is version 5; back up the database before upgrading.
+**New in this update:** separate control and warden roles, shared-ledger API admission, process heartbeats, an independent Patrol monitor, draining, explicit control-outage policy, and a two-warden deployment configuration. Read [the API and warden guide](docs/WARDENS.md) first for this architecture. The old standalone command remains available. The database schema is version 6 (adds per-end-user request tracking); back up the database and run `manage.py migrate` before upgrading.
 
 Tollgate sits between your SaaS backend and AI providers. It authenticates each customer's virtual key, reserves credits before generation, streams the answer, and settles the cost of provider-reported usage once. This release includes OpenAI Responses, Anthropic Messages, and a Gemini free-tier adapter behind a text-only OpenAI Chat Completions interface.
 
@@ -11,6 +11,8 @@ Tollgate sits between your SaaS backend and AI providers. It authenticates each 
 | you are | read |
 |---|---|
 | A **client developer** integrating with Tollgate | [Integration guide](docs/API_GUIDE.md) + [OpenAPI 3.1 specification](docs/api/openapi.json). The running server also publishes the spec at `/api-spec.json`. |
+| Choosing **how** to integrate (zero-code, fail-open, key ownership) | [Integration modes](docs/integrations/INTEGRATION_MODES.md) |
+| A **business signing up** to use Tollgate (own provider key, own API keys) | [Client portal](docs/CLIENT_PORTAL.md), served at `/portal` |
 | The **operator** onboarding a client | [Onboarding runbook](docs/ONBOARDING.md): one command, `python manage.py onboard ...`, prints the client pack |
 | The **operator** using the dashboard | [Admin panel guide](docs/ADMIN_PANEL.md) |
 | Deploying for real users | [Deployment and go-live guide](docs/DEPLOYMENT.md), then [Operations](docs/OPERATIONS.md) |

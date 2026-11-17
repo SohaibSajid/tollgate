@@ -146,6 +146,8 @@ def main():
             "offline-secret",
             "export-openapi",
             "onboard",
+            "credentials-key",
+            "customer-key",
         ),
     )
     parser.add_argument(
@@ -213,6 +215,19 @@ def main():
             "Owner key rotated. Restart all gateway processes to invalidate old sessions."
         )
         return
+    if args.command == "credentials-key":
+        from cryptography.fernet import Fernet
+        from dotenv import dotenv_values
+
+        if dotenv_values(ROOT / ".env").get("TOLLGATE_CREDENTIALS_KEY"):
+            parser.error(
+                "A credentials key already exists. Replacing it would make saved customer provider keys unreadable."
+            )
+        update_env({"TOLLGATE_CREDENTIALS_KEY": Fernet.generate_key().decode()})
+        print(
+            "Credentials key saved to .env. Back it up together with the database, then restart the gateway and worker."
+        )
+        return
     if args.command == "offline-secret":
         update_env({"TOLLGATE_ALLOWANCE_SECRET": secrets.token_urlsafe(48)})
         print(
@@ -259,7 +274,7 @@ def main():
     try:
         if args.command == "migrate":
             database.initialize()
-            print("Schema version 5 is ready. Existing accounting records were preserved.")
+            print("Schema version 6 is ready. Existing accounting records were preserved.")
         elif args.command == "backup":
             if database.url:
                 parser.error("Use pg_dump for PostgreSQL. See docs/OPERATIONS.md.")
@@ -296,6 +311,23 @@ def main():
             run_service(run_patrol(settings))
         elif args.command == "onboard":
             onboard(parser, args, settings, ledger)
+        elif args.command == "customer-key":
+            from app.services.ledger import BillingError
+            from app.services.provider_keys import ProviderKeys
+
+            if not args.provider or not args.customer_id:
+                parser.error("Usage: manage.py customer-key gemini --customer-id cus_...")
+            database.check_version()
+            value = getpass.getpass("Customer's own provider key (hidden input): ").strip()
+            try:
+                saved = ProviderKeys(database, settings).save(
+                    args.customer_id, args.provider, value
+                )
+            except BillingError as exc:
+                parser.error(exc.message)
+            print(
+                "Saved", saved["provider"], "key ending", saved["hint"], "for", saved["customer_id"]
+            )
         elif args.command == "reconcile":
             result = ledger.reconciliation()
             print(json.dumps(result, indent=2))
@@ -308,9 +340,15 @@ def main():
             models = load_models(settings)
             print("Mode:", settings.mode)
             print("Database:", "PostgreSQL" if database.url else "SQLite development")
-            print("Schema: version 5")
+            print("Schema: version 6")
             print("Service role:", settings.service_role)
             print("Control outage policy:", settings.control_failure_policy)
+            print(
+                "Customer provider keys:",
+                settings.provider_key_policy,
+                "| credentials key:",
+                "configured" if settings.credentials_key.get_secret_value() else "missing",
+            )
             for spec in models.values():
                 print(
                     "Model:",

@@ -63,6 +63,9 @@ class Settings(BaseSettings):
         "anthropic",
         "gemini",
     ]
+    credentials_key: SecretStr = SecretStr("")
+    provider_key_policy: Literal["customer_first", "customer_only"] = "customer_first"
+    signup_mode: Literal["approval", "open", "closed"] = "approval"
     openai_store_responses: bool = False
     model_catalog_path: Path = BASE_DIR / "models.json"
     price_max_age_days: int = Field(default=30, ge=1, le=90)
@@ -150,6 +153,14 @@ class Settings(BaseSettings):
         """Require separate randomly generated, URL-safe keys without unsafe defaults."""
         if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", value.get_secret_value()) is None:
             raise ValueError("Generate a URL-safe key containing 32-128 characters.")
+        return value
+
+    @field_validator("credentials_key")
+    @classmethod
+    def valid_credentials_key(cls, value: SecretStr) -> SecretStr:
+        secret = value.get_secret_value()
+        if secret and re.fullmatch(r"[A-Za-z0-9_-]{43}=", secret) is None:
+            raise ValueError("Generate this key with: python manage.py credentials-key")
         return value
 
     @field_validator("provider_base_url")

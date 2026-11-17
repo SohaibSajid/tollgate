@@ -191,6 +191,8 @@ class Ledger:
         feature: str,
         input_bound: int,
         output_bound: int,
+        end_user: str | None = None,
+        key_source: str | None = None,
     ) -> dict:
         """Check key, model, balance, cap, and uniqueness while atomically creating a hold."""
         amount = calculate_cost(
@@ -275,7 +277,7 @@ class Ledger:
                 (amount, customer_id),
             )
             connection.execute(
-                "INSERT INTO requests(id,customer_id,key_id,idempotency_key,request_hash,model,feature,state,reserve_micro,price_version,input_rate,output_rate,input_bound,output_bound,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'reserved',?,?,?,?,?,?,?,?)",
+                "INSERT INTO requests(id,customer_id,key_id,idempotency_key,request_hash,model,feature,end_user,key_source,state,reserve_micro,price_version,input_rate,output_rate,input_bound,output_bound,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,'reserved',?,?,?,?,?,?,?,?)",
                 (
                     request_id,
                     customer_id,
@@ -284,6 +286,8 @@ class Ledger:
                     request_hash,
                     spec.id,
                     feature,
+                    end_user,
+                    key_source,
                     amount,
                     spec.price_version,
                     spec.input_rate,
@@ -558,6 +562,12 @@ class Ledger:
                     "SELECT feature,COUNT(*) AS requests,COALESCE(SUM(actual_micro),0) AS cost_micro FROM requests WHERE state='settled' GROUP BY feature ORDER BY cost_micro DESC LIMIT 100"
                 )
             ]
+            end_users = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT customer_id,end_user,COUNT(*) AS requests,COALESCE(SUM(input_tokens),0) AS input_tokens,COALESCE(SUM(output_tokens),0) AS output_tokens,COALESCE(SUM(actual_micro),0) AS cost_micro FROM requests WHERE state='settled' AND end_user IS NOT NULL GROUP BY customer_id,end_user ORDER BY cost_micro DESC,requests DESC LIMIT 100"
+                )
+            ]
             jobs = {
                 row[0]: row[1]
                 for row in connection.execute(
@@ -597,6 +607,7 @@ class Ledger:
             "requests": requests,
             "ledger": entries,
             "features": features,
+            "end_users": end_users,
             "queue": jobs,
         }
 
@@ -654,6 +665,8 @@ class Ledger:
                 "customer_id",
                 "model",
                 "feature",
+                "end_user",
+                "key_source",
                 "state",
                 "price_version",
                 "input_tokens",

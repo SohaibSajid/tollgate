@@ -140,6 +140,8 @@ class RequestStatus(Strict):
     customer_id: str
     model: str
     feature: str
+    end_user: str | None
+    key_source: Literal["customer", "deployment"] | None
     state: RequestState
     price_version: str
     input_tokens: int | None
@@ -179,10 +181,11 @@ ERRORS = {
     "model_not_allowed": (403, "This key is not allowed to use the requested model.", "Use a model listed by `GET /v1/models` for this key."),
     "account_frozen": (403, "The operator suspended new requests for this customer.", "Contact the operator."),
     "spend_cap_exceeded": (403, "The request would exceed the customer's lifetime spend cap.", "Contact the operator to raise the cap."),
+    "provider_key_missing": (403, "This gateway requires your own provider key for this model's provider, and none is saved for your account.", "Give the operator your provider API key (for example your Gemini key) to save for your account."),
     "request_not_found": (404, "No request with this ID belongs to your customer account.", "Check the ID. You can only read your own requests."),
     "wrong_service": (404, "This address serves a different role (generation vs administration).", "Use the API base URL from your client pack."),
     "duplicate_request": (409, "The same Idempotency-Key was already used with the same body.", "Do not generate again. Read `GET /v1/requests/{context.original_request_id}`."),
-    "idempotency_conflict": (409, "The same Idempotency-Key was already used with a different body or feature label.", "Use a new Idempotency-Key for a different request."),
+    "idempotency_conflict": (409, "The same Idempotency-Key was already used with a different body, feature label or end user.", "Use a new Idempotency-Key for a different request."),
     "reservation_unavailable": (409, "The hold was released before dispatch. No provider call was made.", "Retry with a new Idempotency-Key."),
     "request_too_large": (413, "The request body exceeds the byte limit (default 262,144 bytes).", "Send a smaller body."),
     "invalid_content_length": (400, "The Content-Length header is not one non-negative integer.", "Let your HTTP library set Content-Length."),
@@ -199,6 +202,7 @@ ERRORS = {
     "storage_unavailable": (503, "The database is temporarily unavailable.", "Retry with the same Idempotency-Key."),
     "authentication_unavailable": (503, "Key verification storage is temporarily unavailable.", "Retry after a short wait."),
     "provider_unavailable": (503, "The AI provider could not be reached.", "Read `GET /v1/requests/{id}` before retrying."),
+    "provider_key_unavailable": (503, "The gateway could not read your saved provider key. No provider call was made.", "Contact the operator; your provider key may need to be saved again."),
     "worker_unavailable": (503, "Settlement is paused, so new generation is paused.", "Retry later; another API node may be healthy."),
     "warden_draining": (503, "This API node is being taken out of service.", "Retry; the load balancer will pick another node."),
     "warden_unavailable": (503, "This API node is not registered as healthy.", "Retry; the load balancer will pick another node."),
@@ -210,7 +214,7 @@ COMMON = ["invalid_api_key", "wrong_service", "rate_limit_exceeded", "internal_e
 BODY = ["request_too_large", "invalid_content_length", "content_length_mismatch", "request_body_timeout", "invalid_request"]
 CHAT = COMMON + BODY + [
     "insufficient_credits", "model_not_allowed", "account_frozen", "spend_cap_exceeded",
-    "duplicate_request", "idempotency_conflict", "reservation_unavailable",
+    "provider_key_missing", "provider_key_unavailable", "duplicate_request", "idempotency_conflict", "reservation_unavailable",
     "unsupported_model", "model_limit_exceeded", "invalid_message_order", "concurrency_limit",
     "provider_rejected", "price_review_required", "provider_unavailable", "worker_unavailable",
     "warden_draining", "warden_unavailable", "control_unavailable", "provider_timeout",
@@ -293,7 +297,7 @@ EXAMPLES = {
     "balance": {"frozen": False, "balance_usd": "1.000000", "reserved_usd": "0.000000", "available_usd": "0.999668", "spent_usd": "0.000332", "spend_cap_usd": None},
     "request": {
         "id": EXAMPLE_REQUEST_ID, "customer_id": "cus_3a5f0e1d2c4b6a7980f1e2d3", "model": "sim-basic", "feature": "default",
-        "state": "settled", "price_version": "sim-test-v1", "input_tokens": 14, "output_tokens": 38, "error_code": None,
+        "end_user": "user_8f2a41", "key_source": "customer", "state": "settled", "price_version": "sim-test-v1", "input_tokens": 14, "output_tokens": 38, "error_code": None,
         "provider": "simulator", "provider_response_id": None, "warden_id": None, "control_degraded": False,
         "cached_tokens": 0, "cache_write_tokens": 0, "resolved_by": None, "created_at": 1762600000.25,
         "reserved_usd": "0.002144", "cost_usd": "0.000332", "usage_source": "simulated",
@@ -338,6 +342,8 @@ def states_markdown() -> str:
 
 
 DESCRIPTION = f"""Tollgate is a prepaid AI gateway. Your application calls Tollgate with a customer API key (`tg_...`) instead of holding AI provider keys. Every chat request reserves its worst-case cost from your credits, calls the AI provider once, then charges the exact reported usage once and returns the unused hold.
+
+**Bring your own key:** the operator can save your own provider key (for example your Gemini key) for your account, encrypted. Requests then call the provider with your key, so the provider bills your account directly, and your Tollgate credits act as a spending budget. `key_source` on each request shows whose key was used (`customer` or `deployment`). If the gateway requires your own key and none is saved, chat returns `provider_key_missing`.
 
 The chat endpoint is compatible with the OpenAI Chat Completions format for **text only**. Official OpenAI SDKs work by setting `base_url` to `<your base URL>/v1`.
 
@@ -442,6 +448,7 @@ def build_client_openapi() -> dict:
                 parameters=[
                     header_param("Idempotency-Key", "Your unique ID for this logical request (for example a UUID). Reusing it with the same body returns `duplicate_request`; with a different body, `idempotency_conflict`.", r"^[A-Za-z0-9_.:-]+$", 128),
                     header_param("X-Tollgate-Feature", "Optional label for cost reporting (for example `support-bot`). Defaults to `default`. It is part of the idempotency fingerprint.", r"^[A-Za-z0-9_.:-]+$", 64),
+                    header_param("X-Tollgate-End-User", "Optional ID of your end user who triggered this request (for example `user_8f2a41`), for per-user usage tracking. Use an opaque ID, never an email or name. Returned as `end_user` by `GET /v1/requests/{request_id}`. When sent, it is part of the idempotency fingerprint.", r"^[A-Za-z0-9_.:-]+$", 128),
                 ],
                 requestBody={
                     "required": True,

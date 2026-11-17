@@ -58,6 +58,9 @@ from app.security.authentication import APIKeyAuthenticationMiddleware
 from app.services.ledger import BillingError, Ledger
 from app.services.pricing import micro_to_usd, simulated_input_tokens, usd_to_micro
 from app.services.provider_client import ProviderClient, ProviderFailure
+from app.services.provider_keys import ProviderKeys
+from app.services.accounts import Accounts
+from app.portal import add_portal
 from app.services.worker import SettlementWorker
 
 logger = logging.getLogger("tollgate.errors")
@@ -88,14 +91,16 @@ def create_app(
     models_catalog = load_models(settings)
     sessions = Sessions(database, settings)
     payments = Payments(settings, ledger, transport=payment_transport)
+    provider_keys = ProviderKeys(database, settings)
+    accounts = Accounts(database, ledger, settings)
     provider = (
         ProviderClient(settings, transport=provider_transport)
         if settings.mode == "simulator"
         else LiveProviderClient(
-            settings, models_catalog, ledger, transport=provider_transport
+            settings, models_catalog, ledger, transport=provider_transport, keys=provider_keys
         )
     )
-    continuity = Continuity(database, ledger, models_catalog, settings)
+    continuity = Continuity(database, ledger, models_catalog, settings, keys=provider_keys)
     worker = SettlementWorker(ledger, provider, settings, continuity)
 
     @asynccontextmanager
@@ -310,7 +315,50 @@ def create_app(
                 for spec in models_catalog.values()
             ],
             **await asyncio.to_thread(ledger.overview),
+            "provider_keys": await asyncio.to_thread(provider_keys.listing),
+            "provider_key_policy": settings.provider_key_policy,
+            "credentials_ready": provider_keys.fernet is not None,
+            "accounts": await asyncio.to_thread(accounts.listing),
+            "signup_mode": settings.signup_mode,
         }
+
+    class ProviderKeyUpdate(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+        api_key: str = Field(min_length=20, max_length=512)
+
+    @app.put("/admin/customers/{customer_id}/provider-keys/{provider}")
+    async def save_provider_key(
+        customer_id: str, provider: str, payload: ProviderKeyUpdate, _credentials: Credential
+    ):
+        return await asyncio.to_thread(
+            provider_keys.save, customer_id, provider, payload.api_key
+        )
+
+    @app.delete("/admin/customers/{customer_id}/provider-keys/{provider}")
+    async def remove_provider_key(customer_id: str, provider: str, _credentials: Credential):
+        return await asyncio.to_thread(provider_keys.remove, customer_id, provider)
+
+    class AccountState(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+        state: str = Field(pattern="^(active|suspended)$")
+
+    @app.get("/admin/accounts")
+    async def list_accounts(_credentials: Credential):
+        return {"accounts": await asyncio.to_thread(accounts.listing)}
+
+    @app.post("/admin/accounts/{account_id}/state")
+    async def set_account_state(account_id: str, payload: AccountState, _credentials: Credential):
+        return await asyncio.to_thread(accounts.set_state, account_id, payload.state)
+
+    add_portal(
+        app,
+        settings=settings,
+        accounts=accounts,
+        ledger=ledger,
+        keys=provider_keys,
+        sessions=sessions,
+        models=models_catalog,
+    )
 
     @app.post("/admin/customers", status_code=201)
     async def create_customer(payload: CustomerCreate, _credentials: Credential):
@@ -499,6 +547,10 @@ def create_app(
         x_tollgate_feature: Annotated[
             str, Header(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")
         ] = "default",
+        x_tollgate_end_user: Annotated[
+            str | None,
+            Header(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"),
+        ] = None,
     ):
         """Reserve atomically, dispatch once, and deliver a JSON answer or live SSE stream."""
         if settings.service_role == "warden":
@@ -527,6 +579,16 @@ def create_app(
                 "model_limit_exceeded",
                 "Output limit is unsupported for this model. OpenAI requires at least 16.",
             )
+        customer_key = await asyncio.to_thread(
+            provider_keys.get, request.state.identity["customer_id"], spec.provider
+        )
+        if customer_key is None and settings.provider_key_policy == "customer_only":
+            raise BillingError(
+                403,
+                "provider_key_missing",
+                "This account has not added its own key for this model's provider.",
+            )
+        key_source = "deployment" if customer_key is None else "customer"
         if settings.mode == "simulator":
             input_bound = simulated_input_tokens(payload.messages)
             if input_bound > spec.max_input_tokens:
@@ -534,12 +596,17 @@ def create_app(
                     422, "model_limit_exceeded", "Input exceeds this model's limit."
                 )
         else:
-            input_bound = await provider.count_tokens(payload.model_dump(), spec)
+            input_bound = await provider.count_tokens(
+                payload.model_dump(), spec, customer_key
+            )
         request_id = request.state.request_id
         idem = idempotency_key or request_id
+        fields = {"request": payload.model_dump(), "feature": x_tollgate_feature}
+        if x_tollgate_end_user:
+            fields["end_user"] = x_tollgate_end_user
         fingerprint = hashlib.sha256(
             json.dumps(
-                {"request": payload.model_dump(), "feature": x_tollgate_feature},
+                fields,
                 sort_keys=True,
                 ensure_ascii=False,
             ).encode()
@@ -554,6 +621,8 @@ def create_app(
             x_tollgate_feature,
             input_bound,
             spec.output_bound(payload.max_completion_tokens),
+            x_tollgate_end_user,
+            key_source,
         )
         headers = {
             "X-Tollgate-Request-ID": request_id,
@@ -578,7 +647,7 @@ def create_app(
         try:
             async with asyncio.timeout_at(deadline):
                 upstream = await provider.open(
-                    payload.model_dump(exclude={"stream_options"}), request_id
+                    payload.model_dump(exclude={"stream_options"}), request_id, customer_key
                 )
         except (ProviderFailure, TimeoutError) as exc:
             failure = (
@@ -691,7 +760,7 @@ def create_app(
 
     @app.get("/assets/{name}", include_in_schema=False)
     async def asset(name: str):
-        if name not in ("dashboard.css", "dashboard.js"):
+        if name not in ("dashboard.css", "dashboard.js", "portal.js"):
             raise HTTPException(404, "Asset not found")
         return FileResponse(
             Path(__file__).with_name("ui") / name,

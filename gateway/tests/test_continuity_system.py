@@ -103,5 +103,62 @@ class RelayCycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 404)
 
 
+class RelayOwnKeyTests(RelayCycleTests):
+    async def asyncSetUp(self):
+        from cryptography.fernet import Fernet
+
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name)
+        self.stack = AsyncExitStack()
+        self.settings = make_settings(
+            self.path,
+            credentials_key=Fernet.generate_key().decode(),
+            provider_key_policy="customer_only",
+        )
+        self.simulator = create_simulator(PROVIDER_KEY, self.path / "provider.db", delay=0)
+        transport = httpx.ASGITransport(app=self.simulator)
+        self.primary = create_app(self.settings, provider_transport=transport)
+        self.relay = create_relay_app(self.settings, provider_transport=transport)
+        await self.stack.enter_async_context(self.primary.router.lifespan_context(self.primary))
+        await self.stack.enter_async_context(self.relay.router.lifespan_context(self.relay))
+        self.api = await self.stack.enter_async_context(
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=self.primary, raise_app_exceptions=False), base_url="http://testserver")
+        )
+        self.rly = await self.stack.enter_async_context(
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=self.relay, raise_app_exceptions=False), base_url="http://testserver")
+        )
+        ledger = self.primary.state.ledger
+        self.customer = ledger.create_customer("Own key")["id"]
+        self.key = ledger.create_key(self.customer, "app", ["sim-basic"])["api_key"]
+        ledger.grant(self.customer, 1_000_000, "start")
+        self.auth = {"Authorization": "Bearer " + self.key}
+        self.owner = {"Authorization": "Bearer " + ADMIN_KEY}
+        self.body = {"model": "sim-basic", "messages": [{"role": "user", "content": "Explain credit holds"}], "max_completion_tokens": 64}
+        saved = await self.api.put(f"/admin/customers/{self.customer}/provider-keys/simulator", headers=self.owner, json={"api_key": PROVIDER_KEY})
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+    async def test_relay_uses_the_sealed_customer_key(self):
+        allowance = await self.allowance()
+        self.assertNotIn(PROVIDER_KEY, allowance["token"])
+        import base64
+
+        body = allowance["token"].split(".")[1]
+        self.assertNotIn(PROVIDER_KEY, base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode())
+        answer = await self.rly.post("/v1/chat/completions", headers={"Authorization": "Bearer " + allowance["token"]}, json=self.body)
+        self.assertEqual(answer.status_code, 200, answer.text)
+
+    async def test_wrong_customer_key_is_used_by_the_relay_too(self):
+        await self.api.put(f"/admin/customers/{self.customer}/provider-keys/simulator", headers=self.owner, json={"api_key": "wrong_" + "c" * 40})
+        allowance = await self.allowance()
+        answer = await self.rly.post("/v1/chat/completions", headers={"Authorization": "Bearer " + allowance["token"]}, json=self.body)
+        self.assertEqual(answer.status_code, 502, answer.text)
+
+    async def test_customer_without_own_key_gets_no_allowance(self):
+        await self.api.delete(f"/admin/customers/{self.customer}/provider-keys/simulator", headers=self.owner)
+        response = await self.api.post("/v1/allowance", headers=self.auth, json={"amount_usd": "0.40", "ttl_minutes": 60, "models": ["sim-basic"]})
+        self.assertEqual(response.status_code, 403, response.text)
+        self.assertEqual(response.json()["error"]["code"], "provider_key_missing")
+
+
 if __name__ == "__main__":
     unittest.main()

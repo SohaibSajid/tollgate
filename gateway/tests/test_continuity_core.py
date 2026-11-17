@@ -40,6 +40,7 @@ def settings(**changes):
         emergency_openai_key=Secret("sk-restricted-openai-test"),
         emergency_anthropic_key=Secret(""),
         emergency_gemini_key=Secret(""),
+        provider_key_policy="customer_first",
     )
     values.update(changes)
     return SimpleNamespace(**values)
@@ -211,6 +212,23 @@ class ContinuityCoreTests(unittest.TestCase):
         self.assertTrue(cont.allowances()[0]["direct"])
         plain = cont.issue(identity, 10_000, 60, ["gpt-test"])
         self.assertNotIn("direct", plain)
+
+    def test_customer_own_key_replaces_emergency_key_and_is_sealed_in_token(self):
+        cont, identity = self.direct_setup()
+        cont.keys = SimpleNamespace(sealed=lambda customer, provider: "sealed-" + provider if provider == "anthropic" else None)
+        result = cont.issue(identity, 100_000, 60, ["claude-test"], include_direct=True)
+        self.assertEqual(result["direct"]["keys"], {})
+        self.assertEqual(result["direct"]["own_keys"], ["anthropic"])
+        self.assertEqual(verify_allowance(SECRET, result["token"])["pk"], {"anthropic": "sealed-anthropic"})
+        self.assertTrue(cont.allowances()[0]["direct"])
+
+    def test_customer_only_refuses_allowance_without_own_key(self):
+        cont, identity = self.direct_setup(provider_key_policy="customer_only")
+        cont.keys = SimpleNamespace(sealed=lambda customer, provider: None)
+        with self.assertRaises(BillingError) as raised:
+            cont.issue(identity, 10_000, 60, ["gpt-test"])
+        self.assertEqual(raised.exception.code, "provider_key_missing")
+        self.assertEqual(self.ledger.balance(self.customer)["reserved_usd"], "0.000000")
 
     def test_direct_issue_needs_a_key_for_every_provider(self):
         cont, identity = self.direct_setup()

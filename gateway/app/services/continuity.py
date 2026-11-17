@@ -83,13 +83,14 @@ def sign_record(secret: str, allowance_id: str, record: dict) -> str:
 
 
 class Continuity:
-    def __init__(self, database, ledger: Ledger, models: dict, settings):
+    def __init__(self, database, ledger: Ledger, models: dict, settings, keys=None):
         self.database, self.ledger, self.models, self.settings = (
             database,
             ledger,
             models,
             settings,
         )
+        self.keys = keys
 
     @property
     def enabled(self) -> bool:
@@ -133,7 +134,10 @@ class Continuity:
             raise BillingError(
                 403, "model_not_allowed", "This key cannot use one of the requested models."
             )
-        direct_keys = self._direct_keys(identity["customer_id"], allowed) if include_direct else None
+        sealed = self._sealed_keys(identity["customer_id"], allowed)
+        direct_keys = (
+            self._direct_keys(identity["customer_id"], allowed, sealed) if include_direct else None
+        )
         now = time.time()
         customer_id, allowance_id = identity["customer_id"], new_id("alw_")
         expires = now + ttl_minutes * 60
@@ -173,7 +177,7 @@ class Continuity:
                     json.dumps(allowed),
                     expires,
                     now,
-                    1 if direct_keys else 0,
+                    0 if direct_keys is None else 1,
                 ),
             )
             Ledger.audit(
@@ -184,20 +188,20 @@ class Continuity:
                     "customer_id": customer_id,
                     "amount_micro": amount_micro,
                     "models": allowed,
-                    "direct": bool(direct_keys),
+                    "direct": direct_keys is not None,
                 },
             )
-        token = sign_allowance(
-            secret,
-            {
-                "aid": allowance_id,
-                "cid": customer_id,
-                "amt": amount_micro,
-                "exp": expires,
-                "iat": now,
-                "models": allowed,
-            },
-        )
+        claims = {
+            "aid": allowance_id,
+            "cid": customer_id,
+            "amt": amount_micro,
+            "exp": expires,
+            "iat": now,
+            "models": allowed,
+        }
+        if sealed:
+            claims["pk"] = sealed
+        token = sign_allowance(secret, claims)
         response = {
             "allowance_id": allowance_id,
             "token": token,
@@ -208,9 +212,28 @@ class Continuity:
             "models": allowed,
             "relay_url": self.settings.relay_url or None,
         }
-        if direct_keys:
-            response["direct"] = {"keys": direct_keys, "expires_at": expires}
+        if direct_keys is not None:
+            response["direct"] = {
+                "keys": direct_keys,
+                "own_keys": sorted(sealed),
+                "expires_at": expires,
+            }
         return response
+
+    def _sealed_keys(self, customer_id: str, models: list[str]) -> dict:
+        sealed = {}
+        for model_id in models:
+            provider = self.models[model_id].provider
+            value = self.keys.sealed(customer_id, provider) if self.keys else None
+            if value:
+                sealed[provider] = value
+            elif self.settings.provider_key_policy == "customer_only":
+                raise BillingError(
+                    403,
+                    "provider_key_missing",
+                    "This account has not added its own key for this model's provider.",
+                )
+        return sealed
 
     def _price(self, model_id: str) -> dict:
         spec = self.models[model_id]
@@ -224,7 +247,7 @@ class Continuity:
             "max_output_tokens": spec.max_output_tokens,
         }
 
-    def _direct_keys(self, customer_id: str, models: list[str]) -> dict:
+    def _direct_keys(self, customer_id: str, models: list[str], sealed: dict) -> dict:
         """Restricted emergency keys, only for customers the owner approved by ID."""
         s = self.settings
         if not s.emergency_direct_enabled:
@@ -239,6 +262,8 @@ class Continuity:
         keys = {}
         for model_id in models:
             provider = self.models[model_id].provider
+            if provider in sealed:
+                continue
             if provider not in available or not available[provider]:
                 raise BillingError(
                     422,

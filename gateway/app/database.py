@@ -125,6 +125,20 @@ CREATE TABLE IF NOT EXISTS offline_records (
 CREATE TABLE IF NOT EXISTS customer_contacts (
  customer_id TEXT PRIMARY KEY REFERENCES customers(id), email TEXT, phone TEXT
 );
+CREATE TABLE IF NOT EXISTS provider_keys (
+ customer_id TEXT NOT NULL REFERENCES customers(id), provider TEXT NOT NULL,
+ secret TEXT NOT NULL, hint TEXT NOT NULL, created_at REAL NOT NULL,
+ PRIMARY KEY(customer_id, provider)
+);
+CREATE TABLE IF NOT EXISTS accounts (
+ id TEXT PRIMARY KEY, customer_id TEXT NOT NULL UNIQUE REFERENCES customers(id),
+ email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('pending','active','suspended')), created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS portal_sessions (
+ token_hash TEXT PRIMARY KEY, csrf TEXT NOT NULL,
+ account_id TEXT NOT NULL REFERENCES accounts(id), expires_at REAL NOT NULL
+);
 """
 
 
@@ -244,7 +258,7 @@ class Database:
                 version = row[0] if row else 0
             else:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, 5):
+            if version not in (0, 1, 2, 3, 4, 5, 6):
                 raise RuntimeError(
                     "Unsupported database version; restore the matching application."
                 )
@@ -270,6 +284,18 @@ class Database:
             if version == 4:
                 ddl = "ALTER TABLE allowances ADD COLUMN direct INTEGER NOT NULL DEFAULT 0"
                 connection.execute(pg_schema(ddl) if self.url else ddl)
+            rows = connection.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name='requests'"
+                if self.url
+                else "PRAGMA table_info(requests)"
+            ).fetchall()
+            names = {row[0] if self.url else row[1] for row in rows}
+            for column in ("end_user", "key_source"):
+                if column not in names:
+                    connection.execute(f"ALTER TABLE requests ADD COLUMN {column} TEXT")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS request_end_user ON requests(customer_id, end_user)"
+            )
             for table in ("ledger", "audit_events"):
                 if self.url:
                     connection.execute(
@@ -289,7 +315,7 @@ class Database:
                         )
             if self.url:
                 connection.execute("DELETE FROM schema_version")
-                connection.execute("INSERT INTO schema_version VALUES (5)")
+                connection.execute("INSERT INTO schema_version VALUES (6)")
                 if connection.execute(
                     "SELECT 1 FROM pg_roles WHERE rolname='tollgate_app'"
                 ).fetchone():
@@ -307,7 +333,7 @@ class Database:
                         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON schema_version FROM tollgate_app"
                     )
             else:
-                connection.execute("PRAGMA user_version=5")
+                connection.execute("PRAGMA user_version=6")
 
     def check_version(self):
         with self.connection() as connection:
@@ -319,7 +345,7 @@ class Database:
                 ).fetchone()
             except Exception:
                 row = None
-            if not row or row[0] != 5:
+            if not row or row[0] != 6:
                 raise RuntimeError(
                     "Run python manage.py migrate before starting this release."
                 )

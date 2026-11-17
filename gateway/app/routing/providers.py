@@ -68,7 +68,10 @@ def load_models(settings) -> dict[str, ModelSpec]:
             raise ValueError("Unsupported provider in model catalog")
         if row["provider"] not in settings.enabled_providers:
             continue
-        if not getattr(settings, row["provider"] + "_api_key").get_secret_value():
+        if (
+            settings.provider_key_policy != "customer_only"
+            and not getattr(settings, row["provider"] + "_api_key").get_secret_value()
+        ):
             continue
         spec = ModelSpec(
             id=row["id"],

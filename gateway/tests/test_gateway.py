@@ -112,6 +112,28 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(balance["reserved_usd"], "0.800000")
         self.assertEqual(balance["available_usd"], "0.200000")
 
+    def test_end_user_is_stored_on_the_request(self):
+        spec = ModelSpec("sim-basic", 1_000_000, 1_000_000)
+        self.ledger.reserve("req_user", self.auth, "req_user", "fingerprint", spec, "test", 10, 10, "user_42")
+        self.assertEqual(self.ledger.request("req_user")["end_user"], "user_42")
+        self.assertIsNone(self.ledger.request(self.reserve()["request_id"])["end_user"])
+
+    def test_schema_six_adds_end_user_and_keeps_balance(self):
+        with self.database.connection() as connection:
+            connection.execute("DROP INDEX request_end_user")
+            connection.execute("ALTER TABLE requests DROP COLUMN end_user")
+            connection.execute("PRAGMA user_version=5")
+        with self.assertRaises(RuntimeError):
+            self.database.check_version()
+        self.database.initialize()
+        self.database.initialize()
+        self.database.check_version()
+        with self.database.connection() as connection:
+            columns = [row[1] for row in connection.execute("PRAGMA table_info(requests)")]
+        self.assertIn("end_user", columns)
+        self.assertEqual(self.ledger.balance(self.customer)["balance_usd"], "1.000000")
+        self.assertTrue(self.ledger.reconciliation()["ok"])
+
     def test_repeated_settlement_charges_once(self):
         """Many workers retrying one job must produce exactly one charge."""
         self.reserve()

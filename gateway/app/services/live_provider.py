@@ -7,6 +7,7 @@ import logging
 import re
 import time
 import httpx
+from app.services.ledger import BillingError
 from app.services.provider_client import ProviderFailure
 from app.services.gemini_provider import GeminiProviderClient
 
@@ -197,8 +198,9 @@ async def sse_objects(response, maximum_bytes):
 
 
 class LiveProviderClient:
-    def __init__(self, settings, models, ledger, transport=None):
+    def __init__(self, settings, models, ledger, transport=None, keys=None):
         self.settings, self.models, self.ledger = settings, models, ledger
+        self.keys = keys
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(
                 settings.provider_timeout_seconds, connect=10, pool=5
@@ -213,14 +215,14 @@ class LiveProviderClient:
     async def close(self):
         await self.client.aclose()
 
-    def destination(self, provider):
+    def destination(self, provider, key=None):
         if provider == "openai":
             return "https://api.openai.com/v1", {
                 "Authorization": "Bearer "
-                + self.settings.openai_api_key.get_secret_value()
+                + (key or self.settings.openai_api_key.get_secret_value())
             }
         return "https://api.anthropic.com/v1", {
-            "x-api-key": self.settings.anthropic_api_key.get_secret_value(),
+            "x-api-key": key or self.settings.anthropic_api_key.get_secret_value(),
             "anthropic-version": "2023-06-01",
         }
 
@@ -284,11 +286,11 @@ class LiveProviderClient:
                     "invalid_provider_response", "Provider returned invalid metadata."
                 ) from exc
 
-    async def count_tokens(self, payload, spec):
+    async def count_tokens(self, payload, spec, key=None):
         """Count remotely; Claude gets a conservative full-context reservation for a hard budget."""
         if spec.provider == "gemini":
-            return await self.gemini.count_tokens(payload, spec)
-        base, headers = self.destination(spec.provider)
+            return await self.gemini.count_tokens(payload, spec, key)
+        base, headers = self.destination(spec.provider, key)
         route = (
             "/responses/input_tokens"
             if spec.provider == "openai"
@@ -321,11 +323,11 @@ class LiveProviderClient:
         # intentionally conservative; final usage refunds the unused reservation.
         return actual if spec.provider == "openai" else spec.context_tokens
 
-    async def open(self, payload, request_id):
+    async def open(self, payload, request_id, key=None):
         spec = self.models[payload["model"]]
         if spec.provider == "gemini":
-            return await self.gemini.open(payload, request_id, spec)
-        base, headers = self.destination(spec.provider)
+            return await self.gemini.open(payload, request_id, spec, key)
+        base, headers = self.destination(spec.provider, key)
         headers["X-Client-Request-Id"] = request_id
         body = self.body(payload, spec)
         body["stream"] = (
@@ -533,7 +535,15 @@ class LiveProviderClient:
             c.isalnum() or c in "_-" for c in provider_id
         ):
             return None
-        base, headers = self.destination("openai")
+        key = None
+        if row["key_source"] == "customer":
+            try:
+                key = await asyncio.to_thread(self.keys.get, row["customer_id"], "openai") if self.keys else None
+            except BillingError:
+                key = None
+            if key is None:
+                return None
+        base, headers = self.destination("openai", key)
         try:
             async with asyncio.timeout(15):
                 data = await self.bounded_json(

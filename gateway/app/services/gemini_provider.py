@@ -90,9 +90,9 @@ class GeminiProviderClient:
         self.client, self.settings, self.ledger = client, settings, ledger
         self.parse_events = parse_events
 
-    def headers(self):
+    def headers(self, key=None):
         """Keep the provider secret in a header, never in URLs or client responses."""
-        return {"x-goog-api-key": self.settings.gemini_api_key.get_secret_value()}
+        return {"x-goog-api-key": key or self.settings.gemini_api_key.get_secret_value()}
 
     def body(self, payload):
         """Map text chat roles and leading system instructions to Gemini contents."""
@@ -190,7 +190,7 @@ class GeminiProviderClient:
         except (ValueError, httpx.HTTPError):
             return {}
 
-    async def count_tokens(self, payload, spec):
+    async def count_tokens(self, payload, spec, key=None):
         """Count the same complete input that generation will receive."""
         request = {
             "generateContentRequest": {
@@ -203,7 +203,7 @@ class GeminiProviderClient:
                 async with self.client.stream(
                     "POST",
                     BASE_URL + spec.upstream_model + ":countTokens",
-                    headers=self.headers(),
+                    headers=self.headers(key),
                     json=request,
                 ) as response:
                     if response.status_code != 200:
@@ -252,7 +252,7 @@ class GeminiProviderClient:
         # Keep a conservative text input ceiling; final reported usage remains authoritative.
         return spec.max_input_tokens
 
-    async def open(self, payload, request_id, spec):
+    async def open(self, payload, request_id, spec, key=None):
         """Dispatch once to the fixed Gemini endpoint; never fall back to a paid provider."""
         try:
             response = await self.client.send(
@@ -260,7 +260,7 @@ class GeminiProviderClient:
                     "POST",
                     BASE_URL + spec.upstream_model + ":streamGenerateContent",
                     params={"alt": "sse"},
-                    headers=self.headers(),
+                    headers=self.headers(key),
                     json=self.body(payload),
                 ),
                 stream=True,

@@ -194,6 +194,7 @@ Prices are **USD per million tokens**. Cost of one request = `input_tokens × in
 |---|---|
 | `Idempotency-Key` | Your unique ID for this logical request (1–128 chars: letters, digits, `_ . : -`). **Strongly recommended.** See §9. |
 | `X-Tollgate-Feature` | A label for cost reporting, for example `support-bot` (1–64 chars, same alphabet). Default `default`. |
+| `X-Tollgate-End-User` | The ID of **your** end user who triggered the request, for example `user_8f2a41` (1–128 chars, same alphabet). Enables per-user usage tracking; returned as `end_user` by `GET /v1/requests/{id}`. Use an opaque ID, never an email or name. |
 
 ---
 
@@ -263,7 +264,7 @@ Networks fail. If you resend a chat request after a timeout, you might pay for t
 |---|---|
 | a new key | Normal processing. |
 | the same key and the **same** body and feature label | **409 `duplicate_request`**. Nothing new is generated. `context.original_request_id` points to the first attempt. Read it with `GET /v1/requests/{id}`. |
-| the same key with a **different** body or `X-Tollgate-Feature` | **409 `idempotency_conflict`**. Use a new key for a different request. |
+| the same key with a **different** body, `X-Tollgate-Feature` or `X-Tollgate-End-User` | **409 `idempotency_conflict`**. Use a new key for a different request. |
 
 Keys are remembered per customer, permanently. Without an `Idempotency-Key`, every call counts as a new request.
 
@@ -301,7 +302,11 @@ After the answer, the exact usage is recorded and the settlement worker charges 
 
 `available_usd = balance_usd − reserved_usd`. All money values are strings with exactly six decimals. Parse them as decimals, never as floats.
 
-`GET /v1/requests/{request_id}` returns the request's `state`, token counts, `reserved_usd`, final `cost_usd` and `error_code`. Prompts and answers are **never stored**.
+`GET /v1/requests/{request_id}` returns the request's `state`, token counts, `reserved_usd`, final `cost_usd`, `error_code`, `end_user` (or `null`) and `key_source`. Prompts and answers are **never stored**.
+
+### Bring your own provider key
+
+The operator can save **your own** provider key (for example your Gemini API key) for your account. It is stored encrypted and never shown again; only its last four characters are displayed. Your requests then call the provider with your key, so the provider bills **your** account directly, and your Tollgate balance works as a spending budget. `key_source` is `customer` when your key was used and `deployment` when the operator's key was used. If the gateway requires your own key and none is saved, chat returns **403 `provider_key_missing`**. Nothing changes in your code: you still send your `tg_` key.
 
 <!-- generated:states -->
 | state | meaning |
@@ -343,12 +348,13 @@ Every error uses one envelope:
 | 402 | `insufficient_credits` | Available credits cannot cover the worst-case reservation for this request. | Top up, or lower `max_completion_tokens`. `context.required_usd` and `context.available_usd` show the gap. |
 | 403 | `account_frozen` | The operator suspended new requests for this customer. | Contact the operator. |
 | 403 | `model_not_allowed` | This key is not allowed to use the requested model. | Use a model listed by `GET /v1/models` for this key. |
+| 403 | `provider_key_missing` | This gateway requires your own provider key for this model's provider, and none is saved for your account. | Give the operator your provider API key (for example your Gemini key) to save for your account. |
 | 403 | `spend_cap_exceeded` | The request would exceed the customer's lifetime spend cap. | Contact the operator to raise the cap. |
 | 404 | `request_not_found` | No request with this ID belongs to your customer account. | Check the ID. You can only read your own requests. |
 | 404 | `wrong_service` | This address serves a different role (generation vs administration). | Use the API base URL from your client pack. |
 | 408 | `request_body_timeout` | The body did not arrive within the read deadline. | Retry on a stable connection. |
 | 409 | `duplicate_request` | The same Idempotency-Key was already used with the same body. | Do not generate again. Read `GET /v1/requests/{context.original_request_id}`. |
-| 409 | `idempotency_conflict` | The same Idempotency-Key was already used with a different body or feature label. | Use a new Idempotency-Key for a different request. |
+| 409 | `idempotency_conflict` | The same Idempotency-Key was already used with a different body, feature label or end user. | Use a new Idempotency-Key for a different request. |
 | 409 | `reservation_unavailable` | The hold was released before dispatch. No provider call was made. | Retry with a new Idempotency-Key. |
 | 413 | `request_too_large` | The request body exceeds the byte limit (default 262,144 bytes). | Send a smaller body. |
 | 422 | `invalid_message_order` | The provider cannot accept this sequence of roles. | Start with system (optional) then user, and alternate user/assistant. |
@@ -362,6 +368,7 @@ Every error uses one envelope:
 | 503 | `authentication_unavailable` | Key verification storage is temporarily unavailable. | Retry after a short wait. |
 | 503 | `control_unavailable` | The control service is down and this node is configured to fail closed. | Retry later. |
 | 503 | `price_review_required` | The operator must review this model's price before it can be used. | Retry later or contact the operator. |
+| 503 | `provider_key_unavailable` | The gateway could not read your saved provider key. No provider call was made. | Contact the operator; your provider key may need to be saved again. |
 | 503 | `provider_unavailable` | The AI provider could not be reached. | Read `GET /v1/requests/{id}` before retrying. |
 | 503 | `storage_unavailable` | The database is temporarily unavailable. | Retry with the same Idempotency-Key. |
 | 503 | `warden_draining` | This API node is being taken out of service. | Retry; the load balancer will pick another node. |

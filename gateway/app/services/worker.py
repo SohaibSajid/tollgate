@@ -80,6 +80,7 @@ async def run_worker(settings):
     from app.services.ledger import Ledger
     from app.services.provider_client import ProviderClient
     from app.services.live_provider import LiveProviderClient
+    from app.services.provider_keys import ProviderKeys
     from app.routing.providers import load_models
     from app.logging.request_log import configure_logging
 
@@ -93,7 +94,9 @@ async def run_worker(settings):
     provider = (
         ProviderClient(settings)
         if settings.mode == "simulator"
-        else LiveProviderClient(settings, load_models(settings), ledger)
+        else LiveProviderClient(
+            settings, load_models(settings), ledger, keys=ProviderKeys(database, settings)
+        )
     )
     from app.services.continuity import Continuity
 

@@ -44,13 +44,16 @@ class ProviderClient:
         """Close pooled HTTP connections during application shutdown."""
         await self.client.aclose()
 
-    async def open(self, payload: dict, request_id: str) -> httpx.Response:
+    async def open(self, payload: dict, request_id: str, key: str | None = None) -> httpx.Response:
         """Open a generation response without reading or buffering its whole body."""
+        headers = {"X-Tollgate-Request-ID": request_id}
+        if key:
+            headers["Authorization"] = "Bearer " + key
         request = self.client.build_request(
             "POST",
             "/v1/chat/completions",
             json=payload,
-            headers={"X-Tollgate-Request-ID": request_id},
+            headers=headers,
         )
         try:
             response = await self.client.send(request, stream=True)

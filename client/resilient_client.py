@@ -20,6 +20,8 @@ Safety rules
 * Spending in tiers 2 and 3 is capped by the allowance, checked locally before every call.
 * Direct mode uses a provider key that left the gateway. Use a restricted key with a spending
   limit set at the provider, and protect journal.db like a password file.
+* Bring your own key: pass own_keys={"gemini": "<your key>"} so the direct tier uses YOUR
+  provider account. The relay uses your key too, sealed inside the allowance.
 """
 
 import json
@@ -84,7 +86,9 @@ class ResilientTollgate:
         failover_order=("relay", "direct"),
         on_failover=None,
         transport=None,
+        own_keys=None,
     ):
+        self.own_keys = dict(own_keys or {})
         self.key, self.primary, self.relay = api_key, primary_url.rstrip("/"), relay_url.rstrip("/")
         self.models, self.allowance_usd, self.allowance_minutes = list(models), allowance_usd, allowance_minutes
         self.direct_failover, self.order, self.on_failover = direct_failover, tuple(failover_order), on_failover
@@ -241,7 +245,7 @@ class ResilientTollgate:
         return body
 
     def _via_direct(self, call_id, payload, allowance, price):
-        keys = json.loads(allowance["direct_json"])["keys"]
+        keys = {**json.loads(allowance["direct_json"])["keys"], **self.own_keys}
         provider = price["provider"]
         if provider not in keys:
             raise _TierUnavailable

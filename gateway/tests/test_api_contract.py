@@ -285,6 +285,42 @@ class LiveContractTests(unittest.IsolatedAsyncioTestCase):
             await client.post(f"/admin/customers/{customer}/freeze", json={"frozen": True, "reason": "contract test"}, headers=owner)
             self.assert_error(await client.post(chat, json=self.body(), headers=auth), "POST", chat, 403, "account_frozen")
 
+    async def test_end_user_is_tracked_per_request(self):
+        chat = "/v1/chat/completions"
+        async with self.server() as (client, auth, owner, customer):
+            tagged = {**auth, "Idempotency-Key": "user-1", "X-Tollgate-End-User": "user_42"}
+            answer = await client.post(chat, json=self.body(), headers=tagged)
+            self.assertEqual(answer.status_code, 200, answer.text)
+            status = await client.get("/v1/requests/" + answer.headers["X-Tollgate-Request-ID"], headers=auth)
+            self.assertEqual(contract.RequestStatus.model_validate(status.json()).end_user, "user_42")
+            plain = await client.post(chat, json=self.body(), headers=auth)
+            self.assertIsNone((await client.get("/v1/requests/" + plain.headers["X-Tollgate-Request-ID"], headers=auth)).json()["end_user"])
+            self.assert_error(await client.post(chat, json=self.body(), headers=tagged), "POST", chat, 409, "duplicate_request")
+            self.assert_error(await client.post(chat, json=self.body(), headers={**tagged, "X-Tollgate-End-User": "user_43"}), "POST", chat, 409, "idempotency_conflict")
+            self.assert_error(await client.post(chat, json=self.body(), headers={**auth, "X-Tollgate-End-User": "bad user@x"}), "POST", chat, 422, "invalid_request")
+            await client.post("/admin/settle", headers=owner)
+            usage = (await client.get("/admin/overview", headers=owner)).json()["end_users"]
+            self.assertEqual([(row["customer_id"], row["end_user"], row["requests"]) for row in usage], [(customer, "user_42", 1)])
+
+    async def test_customer_provider_key_is_required_and_used(self):
+        from cryptography.fernet import Fernet
+
+        chat = "/v1/chat/completions"
+        secret = Fernet.generate_key().decode()
+        async with self.server(credentials_key=secret, provider_key_policy="customer_only") as (client, auth, owner, customer):
+            self.assert_error(await client.post(chat, json=self.body(), headers=auth), "POST", chat, 403, "provider_key_missing")
+            path = f"/admin/customers/{customer}/provider-keys/simulator"
+            self.assertEqual((await client.put(path, json={"api_key": "wrong_" + "c" * 40}, headers=owner)).status_code, 200)
+            self.assert_error(await client.post(chat, json=self.body(), headers=auth), "POST", chat, 502, "provider_rejected")
+            saved = await client.put(path, json={"api_key": PROVIDER_KEY}, headers=owner)
+            self.assertEqual(saved.status_code, 200, saved.text)
+            self.assertNotIn(PROVIDER_KEY, saved.text)
+            answer = await client.post(chat, json=self.body(), headers=auth)
+            self.assertEqual(answer.status_code, 200, answer.text)
+            status = await client.get("/v1/requests/" + answer.headers["X-Tollgate-Request-ID"], headers=auth)
+            self.assertEqual(contract.RequestStatus.model_validate(status.json()).key_source, "customer")
+            self.assertNotIn(PROVIDER_KEY, (await client.get("/admin/overview", headers=owner)).text)
+
     async def test_insufficient_credits_reports_the_gap(self):
         async with self.server(credit="0.000100") as (client, auth, *_):
             error = self.assert_error(await client.post("/v1/chat/completions", json=self.body(), headers=auth), "POST", "/v1/chat/completions", 402, "insufficient_credits")

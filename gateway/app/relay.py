@@ -31,6 +31,7 @@ from app.services.continuity import sign_record, verify_allowance
 from app.services.live_provider import LiveProviderClient
 from app.services.pricing import calculate_cost, micro_to_usd, simulated_input_tokens
 from app.services.provider_client import ProviderClient, ProviderFailure
+from app.services.provider_keys import unseal
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS relay_allowances (
@@ -299,12 +300,20 @@ def create_relay_app(settings: Settings | None = None, *, provider_transport=Non
             spec.provider == "openai" and payload.max_completion_tokens < 16
         ):
             raise RelayError(422, "model_limit_exceeded", "Output limit is unsupported for this model.")
+        key, sealed = None, (claims.get("pk") or {}).get(spec.provider)
+        if sealed:
+            try:
+                key = unseal(settings, sealed)
+            except ValueError as exc:
+                raise RelayError(503, "provider_key_unavailable", "The relay cannot read this account's provider key.") from exc
+        elif settings.provider_key_policy == "customer_only":
+            raise RelayError(403, "provider_key_missing", "This account has not added its own key for this model's provider.")
         if settings.mode == "simulator":
             input_bound = simulated_input_tokens(payload.messages)
             if input_bound > spec.max_input_tokens:
                 raise RelayError(422, "model_limit_exceeded", "Input exceeds this model's limit.")
         else:
-            input_bound = await provider.count_tokens(payload.model_dump(), spec)
+            input_bound = await provider.count_tokens(payload.model_dump(), spec, key)
         reserve = calculate_cost(
             input_bound,
             spec.output_bound(payload.max_completion_tokens),
@@ -322,7 +331,7 @@ def create_relay_app(settings: Settings | None = None, *, provider_transport=Non
         try:
             async with asyncio.timeout_at(deadline):
                 upstream = await provider.open(
-                    payload.model_dump(exclude={"stream_options"}), record_id
+                    payload.model_dump(exclude={"stream_options"}), record_id, key
                 )
         except (ProviderFailure, TimeoutError) as exc:
             failure = (
